@@ -239,30 +239,30 @@ def main(cfg):
                     writer.add_scalar(key, value.item(), total_step)
 
             ####visualize the depth_mono and disp_preds
-            if total_step % 20 == 0 and accelerator.is_main_process:
-                image1_np = left[0].squeeze().cpu().numpy()
-                image1_np = (image1_np - image1_np.min()) / (image1_np.max() - image1_np.min()) * 255.0
-                image1_np = image1_np.astype(np.uint8)
-                image1_np = np.transpose(image1_np, (1, 2, 0))
+            # if total_step % 20 == 0 and accelerator.is_main_process:
+            #     image1_np = left[0].squeeze().cpu().numpy()
+            #     image1_np = (image1_np - image1_np.min()) / (image1_np.max() - image1_np.min()) * 255.0
+            #     image1_np = image1_np.astype(np.uint8)
+            #     image1_np = np.transpose(image1_np, (1, 2, 0))
 
-                image2_np = right[0].squeeze().cpu().numpy()
-                image2_np = (image2_np - image2_np.min()) / (image2_np.max() - image2_np.min()) * 255.0
-                image2_np = image2_np.astype(np.uint8)
-                image2_np = np.transpose(image2_np, (1, 2, 0))
+            #     image2_np = right[0].squeeze().cpu().numpy()
+            #     image2_np = (image2_np - image2_np.min()) / (image2_np.max() - image2_np.min()) * 255.0
+            #     image2_np = image2_np.astype(np.uint8)
+            #     image2_np = np.transpose(image2_np, (1, 2, 0))
 
 
-                depth_mono_np = gray_2_colormap_np(depth_mono[0].squeeze())
-                disp_preds_np = gray_2_colormap_np(disp_preds[-1][0].squeeze())
-                disp_gt_np = gray_2_colormap_np(disp_gt[0].squeeze())
+            #     depth_mono_np = gray_2_colormap_np(depth_mono[0].squeeze())
+            #     disp_preds_np = gray_2_colormap_np(disp_preds[-1][0].squeeze())
+            #     disp_gt_np = gray_2_colormap_np(disp_gt[0].squeeze())
                 
-                # 使用 TensorBoard 记录图像
-                if writer is not None:
-                    writer.add_image("disp_pred", disp_preds_np.transpose(2, 0, 1), total_step)
-                    writer.add_image("disp_gt", disp_gt_np.transpose(2, 0, 1), total_step)
-                    writer.add_image("depth_mono", depth_mono_np.transpose(2, 0, 1), total_step)
+            #     # 使用 TensorBoard 记录图像
+            #     if writer is not None:
+            #         writer.add_image("disp_pred", disp_preds_np.transpose(2, 0, 1), total_step)
+            #         writer.add_image("disp_gt", disp_gt_np.transpose(2, 0, 1), total_step)
+            #         writer.add_image("depth_mono", depth_mono_np.transpose(2, 0, 1), total_step)
             
 
-            if total_step % 100 == 0 and accelerator.is_main_process:
+            if (total_step % 100 == 0 or total_step == 0) and accelerator.is_main_process:
                 # 创建保存目录
                 os.makedirs(os.path.join('/mnt/datalrl/depth/stereo/MonSter/plot', 'train'), exist_ok=True)
                 plot_and_save_results(left, disp_init_pred, disp_preds[-1], disp_gt, depth_mono, os.path.join('/mnt/datalrl/depth/stereo/MonSter/plot', 'train', f'{total_step}.png'))
@@ -280,7 +280,8 @@ def main(cfg):
             if (total_step > 0) and (total_step % cfg.val_frequency == 0):
 
                 model.eval()
-                elem_num, total_epe, total_out = 0, 0, 0
+                total_epe, total_out = 0, 0
+                num_samples = 0
                 for data in tqdm(val_loader, dynamic_ncols=True, disable=not accelerator.is_main_process):
                     _, left, right, disp_gt, valid = [x for x in data]
                     padder = InputPadder(left.shape, divis_by=32)
@@ -293,16 +294,21 @@ def main(cfg):
                     out = (epe > 1.0).float()
                     epe = torch.squeeze(epe, dim=1)
                     out = torch.squeeze(out, dim=1)
-                    epe, out = accelerator.gather_for_metrics((epe[valid >= 0.5].mean(), out[valid >= 0.5].mean()))
-                    elem_num += epe.shape[0]
-                    for i in range(epe.shape[0]):
-                        total_epe += epe[i]
-                        total_out += out[i]
+                    valid = torch.squeeze(valid, dim=1)  # 确保valid也是2D张量
+                    
+                    # 计算当前样本的指标
+                    current_epe = epe[valid >= 0.5].mean()
+                    current_out = out[valid >= 0.5].mean()
+                    
+                    # 累加到总和中
+                    total_epe += current_epe.item()
+                    total_out += current_out.item()
+                    num_samples += 1
                     
                     # 使用 TensorBoard 记录验证指标
                     if accelerator.is_main_process and writer is not None:
-                        writer.add_scalar('val/epe', total_epe / elem_num, total_step)
-                        writer.add_scalar('val/d1', 100 * total_out / elem_num, total_step)
+                        writer.add_scalar('val/epe', total_epe / num_samples, total_step)
+                        writer.add_scalar('val/d1', 100 * total_out / num_samples, total_step)
 
                 model.train()
                 if hasattr(model, 'module'):
